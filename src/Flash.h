@@ -64,6 +64,14 @@ public:
     const char* what() const throw() { return "Flash command failed"; }
 };
 
+class BootFlashError : public std::exception
+{
+public:
+    BootFlashError() : exception() {};
+    const char* what() const throw() { return "Cannot clear Boot Flash. No ROM boot option available for this device"; }
+
+};
+
 class Flash
 {
 public:
@@ -84,6 +92,11 @@ public:
     virtual uint32_t pageSize() { return _size; }
     virtual uint32_t numPages() { return _pages; }
     virtual uint32_t numPlanes() { return _planes; }
+
+    //Usually all the bootloaders are in ROM and the application is flashed 
+    //in page 0.But for some types of Flash, it could be different and will
+    //be overrided in the derived class
+    virtual uint16_t appStartPage() { return 0;}
 
     virtual void eraseAll() = 0;
     virtual void eraseAuto(bool enable) = 0;
@@ -110,9 +123,10 @@ public:
     virtual void setBootFlash(bool enable) = 0;
     virtual bool canBootFlash() = 0;
 
-    virtual void loadBuffer(const uint8_t* data);
+    virtual void loadBuffer(const uint8_t* data, uint16_t size);
     virtual void writePage(uint32_t page) = 0;
     virtual void readPage(uint32_t page, uint8_t* data) = 0;
+    virtual void beforeWrite() { }
 
     typedef std::auto_ptr<Flash> Ptr;
 

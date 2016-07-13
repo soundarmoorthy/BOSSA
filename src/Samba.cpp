@@ -32,6 +32,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <ctype.h>
+#include <unistd.h>
 
 using namespace std;
 
@@ -66,6 +67,12 @@ Samba::init()
 
     _port->timeout(TIMEOUT_QUICK);
 
+    // Allows Arduino auto-reset
+    usleep(500000);
+    // Flush garbage
+    uint8_t dummy[1024];
+    _port->read(dummy, 1024);
+
     if (!_isUsb)
     {
         if (_debug)
@@ -89,9 +96,14 @@ Samba::init()
     _port->read(cmd, 2);
 
     // Read the chip ID
+    ChipInfo info;
     try
     {
-        cid = chipId();
+        info = chipInfo();
+
+      if(info.arch == UNKNOWN)
+	  return false;
+      cid = info.chipId;
     }
     catch (SambaError)
     {
@@ -102,6 +114,18 @@ Samba::init()
 
     if (_debug)
         printf("chipId=%#08x\n", cid);
+
+    //Check for M0+ processors.
+    if(info.arch == M0_PLUS)
+    {
+       int arch = -1;
+       arch = cid >> ((sizeof(int)*8) - 4); //see the 4 bits from MSB
+       if(arch == 1)
+          return true;
+       if(_debug)
+          printf("Unsupported M0+ architecture\n");
+    }
+
 
     uint8_t eproc = (cid >> 5) & 0x7;
     uint8_t arch = (cid >> 20) & 0xff;
@@ -145,7 +169,7 @@ Samba::init()
 }
 
 bool
-Samba::connect(SerialPort::Ptr port)
+Samba::connect(SerialPort::Ptr port, int bps)
 {
     _port = port;
 
@@ -160,10 +184,10 @@ Samba::connect(SerialPort::Ptr port)
     _isUsb = false;
 
     // Try the serial port at slower speed
-    if (_port->open(115200) && init())
+    if (_port->open(bps) && init())
     {
         if (_debug)
-            printf("Connected at 115200 baud\n");
+            printf("Connected at %d baud\n", bps);
         return true;
     }
 
@@ -189,6 +213,15 @@ Samba::writeByte(uint32_t addr, uint8_t value)
     snprintf((char*) cmd, sizeof(cmd), "O%08X,%02X#", addr, value);
     if (_port->write(cmd, sizeof(cmd) - 1) != sizeof(cmd) -  1)
         throw SambaError();
+
+    // The SAM firmware has a bug that if the command and binary data
+    // are received in the same USB data packet, then the firmware
+    // gets confused.  Even though the writes are sperated in the code,
+    // USB drivers often do write combining which can put them together
+    // in the same USB data packet.  To avoid this, we call the serial
+    // port object's flush method before writing the data.
+    if (_isUsb)
+        _port->flush();
 }
 
 uint8_t
@@ -211,6 +244,7 @@ Samba::readByte(uint32_t addr)
     return value;
 }
 
+
 void
 Samba::writeWord(uint32_t addr, uint32_t value)
 {
@@ -222,7 +256,17 @@ Samba::writeWord(uint32_t addr, uint32_t value)
     snprintf((char*) cmd, sizeof(cmd), "W%08X,%08X#", addr, value);
     if (_port->write(cmd, sizeof(cmd) - 1) != sizeof(cmd) - 1)
         throw SambaError();
+
+    // The SAM firmware has a bug that if the command and binary data
+    // are received in the same USB data packet, then the firmware
+    // gets confused.  Even though the writes are sperated in the code,
+    // USB drivers often do write combining which can put them together
+    // in the same USB data packet.  To avoid this, we call the serial
+    // port object's flush method before writing the data.
+    if (_isUsb)
+        _port->flush();
 }
+
 
 uint32_t
 Samba::readWord(uint32_t addr)
@@ -538,18 +582,89 @@ Samba::version()
 uint32_t
 Samba::chipId()
 {
-    uint32_t vector;
+    ChipInfo info = chipInfo();
+    return info.chipId;
+}
+
+ChipInfo
+Samba::chipInfo()
+{
     uint32_t cid;
+    uint32_t vector;
+    ChipInfo info;
+    CHIP_ARCH arch;
 
     // Read the ARM reset vector
     vector = readWord(0x0);
 
     // If the vector is a ARM7TDMI branch, then assume Atmel SAM7 registers
     if ((vector & 0xff000000) == 0xea000000)
-        cid = readWord(0xfffff240);
-    // Else use the Atmel SAM3 registers
-    else
-        cid = readWord(0x400e0740);
+    {
+      cid = readWord(0xfffff240);
+      arch = ARM7TDMI;
+    }
+    // Else use the Atmel SAM3 or SAM4 or M0+ registers 
+    else 
+    {
+      //The M0+, M3 and M4 have the CPUID register at
+      //a commen addresss in CORE.
+      uint32_t cpuid_reg = readWord(0xe000ed00);
+      uint16_t part_no = cpuid_reg & 0x00fff0;
+      if(part_no == 0xC230)
+      {
+        cid = readWord(0x400e0940);//CHIPID
+	arch = M3;
+      }
+      else if(part_no == 0xC240)
+      {
+        cid = readWord(0x400e0740); //CHIPID
+	arch = M4;
+      }
+      else if(part_no == 0xC600)
+      {
+        cid = readWord(0x41002018); //DSU_DID
+	arch = M0_PLUS;
+      }
+      else
+      {
+        cid = 0;
+	arch = UNKNOWN;
+      }
+    }
 
-    return cid;
+    info.chipId = cid;
+    info.arch = arch;
+    return info;
+}
+
+void
+Samba::reset(void)
+{
+		uint32_t chipId = Samba::chipId();
+
+		//If it's SAMD21G18 or SAMD21J18	
+		if(chipId == 0x10010000 || chipId == 0x10010005) {
+		  //The following write resets the controller.
+	    //More info : http://infocenter.arm.com/help/index.jsp?topic=/com.arm.doc.ddi0484c/index.html
+			writeWord(0xE000ED0C,0x05FA0004);
+			return;
+		}
+
+		//Now do the rest
+					
+
+    if (chipId != 0x285e0a60) {
+        printf("Reset not supported for this CPU");
+        return;
+    }
+
+
+    printf("CPU reset.\n");
+    writeWord(0x400E1A00, 0xA500000D);
+
+    // Some linux users experienced a lock up if the serial
+    // port is closed while the port itself is being destroyed.
+    // This delay is here to give the time to kernel driver to
+    // sort out things before closing the port.
+    usleep(100000);
 }

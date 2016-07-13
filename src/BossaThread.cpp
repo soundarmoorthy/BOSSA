@@ -120,6 +120,7 @@ WriteThread::Entry()
     uint32_t pageSize = flash.pageSize();
     uint8_t buffer[pageSize];
     uint32_t pageNum = 0;
+    uint16_t appStartPage = flash.appStartPage();
     uint32_t numPages;
     long fsize;
     size_t fbytes;
@@ -149,6 +150,7 @@ WriteThread::Entry()
         if (numPages > flash.numPages())
             throw FileSizeError();
 
+        flash.beforeWrite();
         while ((fbytes = fread(buffer, 1, pageSize, infile)) > 0)
         {
             if (_stopped)
@@ -165,8 +167,8 @@ WriteThread::Entry()
                          percent);
             }
 
-            flash.loadBuffer(buffer);
-            flash.writePage(pageNum);
+            flash.loadBuffer(buffer, fbytes);
+            flash.writePage((appStartPage+pageNum));
 
             pageNum++;
             if (pageNum == numPages)
@@ -191,11 +193,11 @@ WriteThread::Entry()
     {
         if (infile)
             fclose(infile);
-        Error(e.what());
+        Error(wxString(e.what(), wxConvUTF8));
         return 0;
     }
 
-    Success("Write completed successfully");
+    Success(_("Write completed successfully"));
     return 0;
 }
 
@@ -214,6 +216,7 @@ VerifyThread::Entry()
     uint8_t bufferB[pageSize];
     uint32_t pageNum = 0;
     uint32_t numPages;
+    uint16_t appStartPage=flash.appStartPage();
     uint32_t byteErrors = 0;
     uint32_t pageErrors = 0;
     uint32_t totalErrors = 0;
@@ -251,7 +254,7 @@ VerifyThread::Entry()
                          percent);
             }
 
-            flash.readPage(pageNum, bufferB);
+            flash.readPage((appStartPage+pageNum), bufferB);
 
             byteErrors = 0;
             for (uint32_t i = 0; i < fbytes; i++)
@@ -280,21 +283,21 @@ VerifyThread::Entry()
     {
         if (infile)
             fclose(infile);
-        Error(e.what());
+        Error(wxString(e.what(), wxConvUTF8));
         return 0;
     }
 
     if (byteErrors != 0)
     {
-        Warning(wxString::Format(
+        Warning(wxString::Format(_(
             "Verify failed\n"
             "Page errors: %d\n"
-            "Byte errors: %d\n",
+            "Byte errors: %d\n"),
             pageErrors, totalErrors));
         return 0;
     }
 
-    Success("Verify successful\n");
+    Success(_("Verify successful\n"));
 
     return 0;
 }
@@ -317,7 +320,7 @@ ReadThread::Entry()
     if (_size == 0)
         _size = pageSize * flash.numPages();
 
-    outfile = fopen(_filename, "wb");
+    outfile = fopen(_filename.mb_str(), "wb");
     if (!outfile)
         throw FileOpenError();
 
@@ -356,11 +359,11 @@ ReadThread::Entry()
     {
         if (outfile)
             fclose(outfile);
-        Error(e.what());
+        Error(wxString(e.what(), wxConvUTF8));
         return 0;
     }
 
-    Success("Read completed successfully");
+    Success(_("Read completed successfully"));
     return 0;
 }
 
